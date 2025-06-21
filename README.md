@@ -7,10 +7,7 @@ One of the first issues was figuring out how to properly handle API rate-limitin
 How it was fixed:
 The solution was to handle general exceptions using Python's Exception class, then check whether the error had a status_code of 429 (which indicates too many requests). This allowed retrying the request after a short delay.
 
-except Exception as e:
-    if hasattr(e, "status_code") and e.status_code == 429:
-        print("Rate limit hit. Retrying...")
-        time.sleep(delay)
+
 2. Rate Limiting from Cohere API
 Once the correct error handling was in place, the Cohere API still sometimes returned HTTP 429 errors due to too many requests being sent too quickly.
 
@@ -21,11 +18,8 @@ A retry loop was implemented. If a rate limit error occurred, the script would w
 After uploading all the embeddings to Qdrant, checking the number of stored vectors using collection_info.vectors_count returned None, which was confusing.
 
 How it was fixed:
-It turned out that the right property to check was points_count, not vectors_count. Changing the check to:
+It turned out that the right property to check was points_count, not vectors_count.
 
-info = client.get_collection(collection_name)
-print(info.points_count)
-correctly showed the number of vectors stored.
 
 4. Deleting & Recreating the Qdrant Collection Didn’t Seem to Work
 Even after calling client.delete_collection(...), old data still seemed to persist. This was confusing, especially when verifying if the new upload worked.
@@ -39,6 +33,8 @@ except:
     pass  # It might not exist yet
 
 client.recreate_collection(...)
+
+
 5. Not Knowing Whether Qdrant Was Running Locally or on the Cloud
 At one point, it wasn’t clear whether the Qdrant client was connecting to a local instance or the cloud. This caused uncertainty about where the data was actually going.
 
@@ -46,7 +42,6 @@ How it was fixed:
 Using the QdrantClient constructor with the correct api_key and ensuring it was pointing to the Qdrant Cloud resolved the confusion:
 
 
-client = QdrantClient(api_key="your-key", url="https://some-url.qdrant.io")
 6. Trying to Check Qdrant Version (Unnecessary Method)
 An attempt was made to check the Qdrant version using client.get_version(), but this failed with an AttributeError because that method isn’t available in the installed version of the client.
 
