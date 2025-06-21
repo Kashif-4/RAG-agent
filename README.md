@@ -1,5 +1,42 @@
 # RAG-agent
 
+✅ What Has Been Done So Far
+📄 Data Collection & Preprocessing
+
+Scraped reported judgments from the LHC website.
+
+Downloaded and extracted text from PDFs using BeautifulSoup and PyMuPDF.
+
+📦 Vector Store Setup (Qdrant)
+
+Set up and connected to a Qdrant cloud instance (hosted).
+
+Embedded judgment text using Cohere embeddings (embed-english-light-v3.0).
+
+Uploaded embeddings in batches into Qdrant with appropriate metadata.
+
+🔍 Search Functionality
+
+Implemented a vector similarity search using client.search() (later advised to switch to query_points due to deprecation warning).
+
+Successfully retrieved the top-k matching results based on user input.
+
+🧠 LLM Integration
+
+Integrated Groq API with the model llama3-8b-8192.
+
+Built a function to pass context + query as a prompt to Groq and parse the response.
+
+🤖 Full Query-to-Answer Pipeline
+
+Created a working RAG pipeline:
+
+Take user query → embed → search in Qdrant → format prompt → send to Groq → return answer.
+
+Successfully answered legal queries based on real LHC judgments.
+
+
+
 ⚠️ Challenges Faced & How They Were Solved
 1. Cohere SDK Errors and Exception Handling
 One of the first issues was figuring out how to properly handle API rate-limiting from Cohere. The original plan was to catch a specific error like TooManyRequestsError, but this caused an import error because that class doesn’t exist in the Cohere SDK. Trying another option, CohereAPIError, also didn’t work and resulted in another import error.
