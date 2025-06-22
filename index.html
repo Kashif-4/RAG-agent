@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Legal Assistant</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f6f8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 50px;
+    }
+
+    h1 {
+      color: #333;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      width: 400px;
+      gap: 10px;
+    }
+
+    input[type="text"] {
+      padding: 12px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+    }
+
+    button {
+      padding: 12px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+    }
+
+    #response {
+      margin-top: 30px;
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      width: 400px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Ask the Legal Assistant</h1>
+  <form id="queryForm">
+    <input type="text" id="question" placeholder="Enter your legal question..." required />
+    <button type="submit">Ask</button>
+  </form>
+  <div id="response"></div>
+
+  <script>
+    document.getElementById("queryForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const question = document.getElementById("question").value;
+
+      const responseDiv = document.getElementById("response");
+      responseDiv.textContent = "Thinking...";
+
+      try {
+        const response = await fetch("http://127.0.0.1:8000/query", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ question: question }),
+        });
+
+        const data = await response.json();
+        responseDiv.textContent = data.answer || data.detail || "❌ Error occurred.";
+      } catch (err) {
+        responseDiv.textContent = "❌ Failed to connect to the API.";
+      }
+    });
+  </script>
+</body>
+</html>
