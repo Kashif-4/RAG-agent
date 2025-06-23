@@ -11,21 +11,63 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 50px;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 600px;
+      height: 100%;
+      padding: 20px;
+      box-sizing: border-box;
     }
 
     h1 {
+      text-align: center;
       color: #333;
+      margin-bottom: 10px;
+    }
+
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      background: white;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      margin-bottom: 15px;
+    }
+
+    .message {
+      margin: 10px 0;
+      padding: 10px 15px;
+      border-radius: 10px;
+      white-space: pre-wrap;
+    }
+
+    .user {
+      background-color: #007bff;
+      color: white;
+      align-self: flex-end;
+    }
+
+    .assistant {
+      background-color: #e4e6eb;
+      color: #333;
+      align-self: flex-start;
     }
 
     form {
       display: flex;
-      flex-direction: column;
-      width: 400px;
       gap: 10px;
     }
 
     input[type="text"] {
+      flex: 1;
       padding: 12px;
       border-radius: 5px;
       border: 1px solid #ccc;
@@ -33,7 +75,7 @@
     }
 
     button {
-      padding: 12px;
+      padding: 12px 20px;
       background-color: #007bff;
       color: white;
       border: none;
@@ -45,49 +87,69 @@
     button:hover {
       background-color: #0056b3;
     }
-
-    #response {
-      margin-top: 30px;
-      background: #fff;
-      padding: 20px;
-      border-radius: 8px;
-      width: 400px;
-      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-      white-space: pre-wrap;
-    }
   </style>
 </head>
 <body>
-  <h1>Ask the Legal Assistant</h1>
-  <form id="queryForm">
-    <input type="text" id="question" placeholder="Enter your legal question..." required />
-    <button type="submit">Ask</button>
-  </form>
-  <div id="response"></div>
+  <div class="container">
+    <h1>Legal Assistant</h1>
+    <div id="chat"></div>
+
+    <form id="queryForm">
+      <input type="text" id="question" placeholder="Type your question..." required />
+      <button type="submit">Ask</button>
+    </form>
+  </div>
 
   <script>
-    document.getElementById("queryForm").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const question = document.getElementById("question").value;
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("question");
+    const form = document.getElementById("queryForm");
+    const ws = new WebSocket("ws://127.0.0.1:8000/ws");
 
-      const responseDiv = document.getElementById("response");
-      responseDiv.textContent = "Thinking...";
+    let currentResponse = null;
 
-      try {
-        const response = await fetch("http://127.0.0.1:8000/query", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ question: question }),
-        });
+    ws.onmessage = (event) => {
+      const msg = event.data;
 
-        const data = await response.json();
-        responseDiv.textContent = data.answer || data.detail || "❌ Error occurred.";
-      } catch (err) {
-        responseDiv.textContent = "❌ Failed to connect to the API.";
+      if (msg === "THINKING...") {
+        currentResponse = document.createElement("div");
+        currentResponse.className = "message assistant";
+        currentResponse.textContent = "💭 Thinking...";
+        chat.appendChild(currentResponse);
+        scrollToBottom();
+        return;
       }
+
+      if (currentResponse && currentResponse.textContent === "💭 Thinking...") {
+        currentResponse.textContent = "";
+      }
+
+      if (currentResponse) {
+        currentResponse.textContent += msg;
+      }
+
+      scrollToBottom();
+    };
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+
+      const userMsg = document.createElement("div");
+      userMsg.className = "message user";
+      userMsg.textContent = question;
+      chat.appendChild(userMsg);
+
+      input.value = "";
+      input.focus();
+
+      ws.send(question);
     });
+
+    function scrollToBottom() {
+      chat.scrollTop = chat.scrollHeight;
+    }
   </script>
 </body>
 </html>
