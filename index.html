@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Legal Assistant</title>
   <style>
     body {
@@ -89,6 +90,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="container">
     <h1>Legal Assistant</h1>
@@ -104,9 +106,54 @@
     const chat = document.getElementById("chat");
     const input = document.getElementById("question");
     const form = document.getElementById("queryForm");
-    const ws = new WebSocket("ws://127.0.0.1:8000/ws");
 
+    let ws;
     let currentResponse = null;
+
+    function connectWebSocket() {
+      ws = new WebSocket("ws://127.0.0.1:8000/ws");
+
+      ws.onopen = () => {
+        console.log("✅ WebSocket connected");
+      };
+
+      ws.onmessage = (event) => {
+        const msg = event.data;
+
+        if (msg === "THINKING...") {
+          currentResponse = document.createElement("div");
+          currentResponse.className = "message assistant";
+          currentResponse.textContent = "💭 Thinking...";
+          chat.appendChild(currentResponse);
+          scrollToBottom();
+          return;
+        }
+
+        if (currentResponse && currentResponse.textContent === "💭 Thinking...") {
+          currentResponse.textContent = "";
+        }
+
+        if (currentResponse) {
+          currentResponse.textContent += msg;
+        }
+
+        scrollToBottom();
+      };
+
+      ws.onclose = () => {
+        console.warn("❌ WebSocket closed. Retrying in 2s...");
+        setTimeout(connectWebSocket, 2000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+        ws.close();
+      };
+    }
+
+    connectWebSocket();  // 🔌 Start the WebSocket connection
+
+
 
     ws.onmessage = (event) => {
       const msg = event.data;
@@ -152,4 +199,5 @@
     }
   </script>
 </body>
+
 </html>
