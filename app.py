@@ -3,7 +3,9 @@ import asyncio
 import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from qdrant_client import QdrantClient
+#from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
+#from qdrant_client.async_qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams
 import requests
 import cohere
@@ -12,13 +14,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 QDRANT_URL = os.environ["QDRANT_URL"]
-QDRANT_API_KEY = os.environ["QDRANT_API_KEY"]
+#QDRANT_API_KEY = os.environ["QDRANT_API_KEY"]
 COHERE_API_KEY = os.environ["COHERE_API_KEY"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 COLLECTION_NAME = "lhc_judgments"
 
 co = cohere.Client(COHERE_API_KEY)
-qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+#qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+#qdrant = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+qdrant = AsyncQdrantClient(url="http://localhost:6333")  # No API for local
+
 
 app = FastAPI()
 
@@ -64,7 +69,7 @@ async def search_query(query, top_k=3):
         input_type="search_query"
     ).embeddings[0]
 
-    results = qdrant.search(
+    results = await qdrant.search(
         collection_name=COLLECTION_NAME,
         query_vector=embed,
         limit=top_k,
@@ -73,18 +78,25 @@ async def search_query(query, top_k=3):
 
     return [hit.payload.get("text", "") for hit in results]
 
+
 async def rerank_context(query, context_list):
     if not context_list:
         return []
 
+    # Ensure all documents are strings
+    documents = [str(doc) for doc in context_list]
+
     results = co.rerank(
         query=query,
-        documents=context_list,
-        top_n=min(5, len(context_list)),
+        documents=documents,
+        top_n=min(5, len(documents)),
         model="rerank-english-v3.0"
     )
 
-    return [r.document["text"] if isinstance(r.document, dict) else r.document for r in results]
+    # Each result is a tuple like (document, relevance_score)
+    return [doc for doc, _ in results]
+
+
 
 async def generate_answer_groq(context, question):
     context_str = "\n\n".join(context)
