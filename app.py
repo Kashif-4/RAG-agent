@@ -166,14 +166,53 @@ Answer:"""
         print("❌ LLM error:", e)
         return "Sorry, something went wrong while generating the answer."
     
-from langsmith.run_helpers import trace  # ✅ New import for tracing
+from fastapi import WebSocket, WebSocketDisconnect
+from langsmith.client import Client
+from langsmith.schemas import RunTypeEnum
+import uuid
 
+client = Client()  
+
+from typing import Optional, Dict, List
+import re
+
+class InteractionAnalyzer:
+    @staticmethod
+    def is_simple_interaction(text: str) -> bool:
+        """Detect non-substantive interactions using multiple heuristics"""
+        text = text.lower().strip()
+        
+        if len(text) < 4 and not any(c.isdigit() for c in text):
+            return True
+            
+        patterns = [
+            r'^(hi|hello|hey|greetings|good\s(morning|afternoon))\b',  # Greetings
+            r'^(thanks|thank you|cheers)\b',  # Acknowledgments
+            r'^(ok|okay|got it|understood)\b',  # Continuations
+            r'^\W*$'  # Pure punctuation/empty
+        ]
+        
+        return any(re.fullmatch(pattern, text) for pattern in patterns)
+    
+    @staticmethod
+    def handle_simple_interaction(text: str) -> str:
+        """Generate appropriate responses for simple interactions"""
+        text = text.lower().strip()
+        
+        if re.match(r'^(hi|hello|hey)', text):
+            return "Hello! I'm your legal assistant. How can I help you today?"
+        elif 'thank' in text:
+            return "You're welcome! Let me know if you have other legal questions."
+        elif re.match(r'^(ok|got it)', text):
+            return "Understood. Please continue with your legal inquiry."
+        return "I'm here to help with legal matters. What would you like to know?"
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("✅ WebSocket connected.")
-
+    
     conversation_history = []
+    analyzer = InteractionAnalyzer()
 
     try:
         while True:
@@ -182,194 +221,118 @@ async def websocket_endpoint(websocket: WebSocket):
             conversation_history.append(f"User: {question}")
 
             try:
-                async with trace("Legal Assistant Session", run_type="chain", tags=["chat"]) as root_run:
+                # Handle simple interactions without tracing
+                if analyzer.is_simple_interaction(question):
+                    response = analyzer.handle_simple_interaction(question)
+                    await websocket.send_text(response)
+                    conversation_history.append(f"Assistant: {response}")
+                    continue
 
-                    async with trace("Query Rewrite", run_type="llm") as step1:
-                        rewritten_query = await query_rewriter("\n".join(conversation_history))
-                        step1.metadata["conversation_history"] = "\n".join(conversation_history)
-                        step1.end(outputs={"rewritten_query": rewritten_query})
+                # Start tracing only for substantive queries
+                trace_id = str(uuid.uuid4())
+                root_run = client.create_run(
+                    id=trace_id,
+                    name="Legal Assistant Session",
+                    run_type=RunTypeEnum.chain,
+                    tags=["chat"],
+                    inputs={"initial_question": question}
+                )
 
-                    async with trace("Vector Search", run_type="retriever") as step2:
-                        search_results = await search_query(rewritten_query or question)
-                        step2.metadata["query_used"] = rewritten_query or question
-                        step2.end(outputs={"top_k": len(search_results)})
+                # 🔹 Step 1: Query Rewrite
+                rewritten_query = await query_rewriter("\n".join(conversation_history))
+                step1_id = str(uuid.uuid4())
+                client.create_run(
+                    id=step1_id,
+                    name="Query Rewrite",
+                    run_type=RunTypeEnum.llm,
+                    parent_run_id=trace_id,
+                    metadata={"conversation_history": "\n".join(conversation_history)},
+                    inputs={"raw_input": question}
+                )
 
-                    async with trace("Rerank Context", run_type="tool") as step3:
-                        reranked = await rerank_context(question, search_results)
-                        step3.end(outputs={"reranked_count": len(reranked)})
+                # 🔹 Step 2: Vector Search with confidence check
+                search_results = await search_query(rewritten_query or question)
+                step2_id = str(uuid.uuid4())
+                client.create_run(
+                    id=step2_id,
+                    name="Vector Search",
+                    run_type=RunTypeEnum.retriever,
+                    parent_run_id=trace_id,
+                    metadata={"query_used": rewritten_query or question},
+                    inputs={"rewritten_query": rewritten_query}
+                )
 
-                    async with trace("Answer Generation", run_type="llm") as step4:
-                        answer = await generate_answer_groq(reranked, question)
-                        step4.metadata["query"] = question
-                        step4.end(outputs={"answer": answer})
+                # Check for low-confidence results
+                if search_results and all(res['score'] < 0.3 for res in search_results):
+                    low_conf_output = {
+                        "warning": "low_confidence_results",
+                        "top_score": max(res['score'] for res in search_results),
+                        "count": len(search_results)
+                    }
+                    client.update_run(step2_id, outputs=low_conf_output)
+                    await websocket.send_text(
+                        "I couldn't find strongly relevant legal information.\n"
+                        "Please try:\n- Using specific legal terms\n- Adding jurisdiction details\n- Providing more context"
+                    )
+                    continue
 
+                client.update_run(step2_id, outputs={"top_k": len(search_results)})
+
+                # 🔹 Step 3: Rerank Context
+                reranked = await rerank_context(question, search_results)
+                step3_id = str(uuid.uuid4())
+                client.create_run(
+                    id=step3_id,
+                    name="Rerank Context",
+                    run_type=RunTypeEnum.tool,
+                    parent_run_id=trace_id,
+                    inputs={"question": question, "results_count": len(search_results)}
+                )
+                client.update_run(step3_id, outputs={
+                    "reranked_count": len(reranked),
+                    "top_score": reranked[0]['score'] if reranked else 0
+                })
+
+                # 🔹 Step 4: Answer Generation with confidence awareness
+                answer = await generate_answer_groq(reranked, question)
+                step4_id = str(uuid.uuid4())
+                client.create_run(
+                    id=step4_id,
+                    name="Answer Generation",
+                    run_type=RunTypeEnum.llm,
+                    parent_run_id=trace_id,
+                    metadata={
+                        "query": question,
+                        "top_context_score": reranked[0]['score'] if reranked else 0
+                    },
+                    inputs={
+                        "context": reranked,
+                        "question": question,
+                        "context_count": len(reranked)
+                    }
+                )
+                
+                # Add confidence disclaimer if needed
+                if reranked and reranked[0]['score'] < 0.5:
+                    answer = f"⚠️ Note: Confidence in this answer is limited.\n\n{answer}"
+
+                client.update_run(step4_id, outputs={"answer": answer})
                 conversation_history.append(f"Assistant: {answer}")
                 await websocket.send_text(answer)
 
             except Exception as e:
                 print("❌ Error during interaction:", e)
-                await websocket.send_text("Something went wrong. Please try again.")
+                error_id = str(uuid.uuid4())
+                if 'trace_id' in locals():
+                    client.create_run(
+                        id=error_id,
+                        name="Error",
+                        run_type=RunTypeEnum.tool,
+                        parent_run_id=trace_id,
+                        error=str(e),
+                        inputs={"question": question}
+                    )
+                await websocket.send_text("I encountered an error processing your legal request. Please try again.")
 
     except WebSocketDisconnect:
         print("❌ WebSocket disconnected.")
-
-
-
-# @app.websocket("/ws")
-# async def websocket_endpoint(websocket: WebSocket):
-#     await websocket.accept()
-#     print("✅ WebSocket connected.")
-
-#     conversation_history = []
-
-#     try:
-#         while True:
-#             question = await websocket.receive_text()
-#             conversation_history.append(f"User: {question}")
-#             await websocket.send_text("THINKING...")
-
-#             root_run = None
-#             try:
-#                 # Start parent trace (chain)
-#                 root_run =  client.create_run(
-#                     name="Legal Assistant Interaction",
-#                     run_type="chain",
-#                     tags=["chat"],
-#                     inputs={"question": question, "conversation": conversation_history},
-#                     start_time=now_iso()
-#                 )
-#                 print("root_run created:", root_run)
-#                 if root_run is None:
-#                     raise Exception("root_run is None! Check your LangSmith client initialization and API key.")
-
-#                 # Step 1: Query Rewriter
-#                 step1 =  client.create_run(
-#                     name="Query Rewriter",
-#                     run_type="llm",
-#                     parent_run_id=root_run.id,
-#                     inputs={"conversation_history": "\n".join(conversation_history)},
-#                     start_time=now_iso()
-#                 )
-
-#                 rewritten_query = await query_rewriter("\n".join(conversation_history))
-#                 step1.metadata["conversation"] = "\n".join(conversation_history)
-
-#                 try:
-#                     step1.end(outputs={"rewritten_query": rewritten_query}, end_time=now_iso())
-#                 except Exception as e:
-#                     print("❌ Failed to end step1 trace:", e)
-
-#                 client.track_run(step1)
-
-#                 # Step 2: Vector Search
-#                 step2 =  client.create_run(
-#                     name="Vector Search",
-#                     run_type="retriever",
-#                     parent_run_id=root_run.id,
-#                     inputs={"search_input": rewritten_query or question},
-#                     start_time=now_iso()
-#                 )
-
-#                 search_input = rewritten_query or question
-#                 search_results = await search_query(search_input)
-
-#                 try:
-#                     step2.end(outputs={"top_k": len(search_results)}, end_time=now_iso())
-#                 except Exception as e:
-#                     print("❌ Failed to end step2 trace:", e)
-
-#                 client.track_run(step2)
-
-#                 # Step 3: Rerank Context
-#                 step3 =  client.create_run(
-#                     name="Rerank Context",
-#                     run_type="tool",
-#                     parent_run_id=root_run.id,
-#                     inputs={"query": question, "num_contexts": len(search_results)},
-#                     start_time=now_iso()
-#                 )
-
-#                 reranked_context = await rerank_context(question, search_results)
-
-#                 try:
-#                     step3.end(outputs={"reranked_count": len(reranked_context)}, end_time=now_iso())
-#                 except Exception as e:
-#                     print("❌ Failed to end step3 trace:", e)
-
-#                 client.track_run(step3)
-
-#                 # Step 4: Answer Generator
-#                 step4 =  client.create_run(
-#                     name="Answer Generator",
-#                     run_type="llm",
-#                     parent_run_id=root_run.id,
-#                     inputs={"question": question},
-#                     start_time=now_iso()
-#                 )
-
-#                 answer = await generate_answer_groq(reranked_context, question)
-
-#                 try:
-#                     step4.end(outputs={"answer": answer}, end_time=now_iso())
-#                 except Exception as e:
-#                     print("❌ Failed to end step4 trace:", e)
-
-#                 client.track_run(step4)
-
-#                 # End root run
-#                 try:
-#                     root_run.end(outputs={"final_answer": answer}, end_time=now_iso())
-#                 except Exception as e:
-#                     print("❌ Failed to end root trace:", e)
-
-#                 client.track_run(root_run)
-
-#                 conversation_history.append(f"Assistant: {answer}")
-#                 await websocket.send_text(answer)
-
-#             except Exception as e:
-#                 print("❌ Error in chat pipeline:", e)
-#                 if root_run:
-#                     try:
-#                         root_run.end(error=str(e), end_time=now_iso())
-#                         client.track_run(root_run)
-#                     except Exception as e2:
-#                         print("❌ Failed to end root trace on error:", e2)
-
-#     except WebSocketDisconnect:
-#         print("❌ WebSocket disconnected.")
-
-
-
-# # @app.get("/test-langsmith")
-# # async def test_langsmith_trace():
-# #     try:
-# #         trace =  client.create_run(
-# #             name="Test Trace",
-# #             run_type="chain",
-# #             start_time=now_iso(),
-# #             inputs={"test_input": "ping"},
-# #         )
-
-# #         child =  client.create_run(
-# #             name="Child Step",
-# #             run_type="llm",
-# #             start_time=now_iso(),
-# #             inputs={"foo": "bar"},
-# #             parent_run_id=trace.id,
-# #         )
-# #         try:
-# #             child.end(outputs={"result": "baz"}, end_time=now_iso())
-# #         except Exception as e:
-# #             print("❌ Failed to end child trace:", e)
-# #         client.track_run(child)
-
-# #         try:
-# #             trace.end(outputs={"done": True}, end_time=now_iso())
-# #         except Exception as e:
-# #             print("❌ Failed to end parent trace:", e)
-# #         client.track_run(trace)
-
-# #         return {"status": "trace sent"}
-# #     except Exception as e:
-# #         return {"status": "error", "message": str(e)}
